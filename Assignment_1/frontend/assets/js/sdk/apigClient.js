@@ -42,6 +42,13 @@ apigClientFactory.newClient = function (config) {
     if(config.region === undefined) {
         config.region = 'us-east-1';
     }
+    if(config.invokeUrl === undefined) {
+        if (typeof window !== 'undefined' && window.CHATBOT_INVOKE_URL) {
+            config.invokeUrl = window.CHATBOT_INVOKE_URL;
+        } else {
+            config.invokeUrl = 'https://bepjvh7s87.execute-api.us-east-1.amazonaws.com/v1';
+        }
+    }
     //If defaultContentType is not defined then default to application/json
     if(config.defaultContentType === undefined) {
         config.defaultContentType = 'application/json';
@@ -53,7 +60,7 @@ apigClientFactory.newClient = function (config) {
 
     
     // extract endpoint and path from url
-    var invokeUrl = 'https://bepjvh7s87.execute-api.us-east-1.amazonaws.com/v1';
+    var invokeUrl = config.invokeUrl;
     var endpoint = /(^https?:\/\/[^\/]+)/g.exec(invokeUrl)[1];
     var pathComponent = invokeUrl.substring(endpoint.length);
 
@@ -81,8 +88,10 @@ apigClientFactory.newClient = function (config) {
 
     var apiGatewayClient = apiGateway.core.apiGatewayClientFactory.newClient(simpleHttpClientConfig, sigV4ClientConfig);
     
-    
-    
+
+    apigClient.__invokeUrl = invokeUrl;
+
+
     apigClient.chatbotPost = function (params, body, additionalParams) {
         if(additionalParams === undefined) { additionalParams = {}; }
         

@@ -24,7 +24,6 @@
 
     <!-- api gateway generated sdk -->
     <script src="./assets/js/sdk/lib/axios/dist/axios.standalone.js"></script>
-    <script src="./assets/js/sdk/lib/CryptoJS/rollups/hmac-sha256.js"></script>
     <script src="./assets/js/sdk/lib/CryptoJS/rollups/sha256.js"></script>
     <script src="./assets/js/sdk/lib/CryptoJS/components/hmac.js"></script>
     <script src="./assets/js/sdk/lib/CryptoJS/components/enc-base64.js"></script>
@@ -77,8 +76,15 @@
     </div>
 
     <script>
-
-      var sdk = apigClientFactory.newClient({});
+      // Override these in-browser for quick debugging if needed:
+      // window.CHATBOT_INVOKE_URL = 'https://{api-id}.execute-api.us-east-1.amazonaws.com/{stage}';
+      // window.CHATBOT_API_KEY = '{optional-api-key}';
+      window.CHATBOT_INVOKE_URL = window.CHATBOT_INVOKE_URL || 'https://bepjvh7s87.execute-api.us-east-1.amazonaws.com/v1';
+      window.CHATBOT_API_KEY = window.CHATBOT_API_KEY || '';
+      var sdk = apigClientFactory.newClient({
+        invokeUrl: window.CHATBOT_INVOKE_URL,
+        apiKey: window.CHATBOT_API_KEY
+      });
 
     </script>
 

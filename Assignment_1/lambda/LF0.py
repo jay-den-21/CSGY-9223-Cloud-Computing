@@ -41,8 +41,15 @@ def lambda_handler(event, context):
             return _response(400, {"error": "Missing unstructured.text"})
 
         # sessionId（会话ID）
+        body_session_id = body.get("sessionId")
+        if body_session_id:
+            body_session_id = str(body_session_id).strip()
+        if not body_session_id:
+            body_session_id = None
+
         session_id = (
-            (((msgs[0] or {}).get("unstructured") or {}).get("id"))
+            body_session_id
+            or (((msgs[0] or {}).get("unstructured") or {}).get("id"))
             or (event.get("requestContext", {}) or {}).get("requestId")
             or str(uuid.uuid4())
         )

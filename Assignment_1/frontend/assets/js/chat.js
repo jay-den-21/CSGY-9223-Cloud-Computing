@@ -4,6 +4,8 @@ $(document).ready(function() {
   var $messages = $('.messages-content'),
     d, h, m,
     i = 0;
+  // Keep one stable Lex session per browser page load.
+  var clientSessionId = 'web-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
 
   $(window).load(function() {
     $messages.mCustomScrollbar();
@@ -31,10 +33,36 @@ $(document).ready(function() {
       messages: [{
         type: 'unstructured',
         unstructured: {
+          id: clientSessionId,
           text: message
         }
       }]
     }, {});
+  }
+
+  function formatChatbotError(error) {
+    var status = error && error.response ? error.response.status : null;
+    var data = error && error.response ? error.response.data : null;
+    var apiError = null;
+    if (data && typeof data === 'object') {
+      apiError = data.error || data.message || null;
+    } else if (typeof data === 'string') {
+      apiError = data;
+    }
+
+    if (!status) {
+      return 'Network/CORS error. Check API Gateway CORS and invoke URL.';
+    }
+    if (status === 403) {
+      return '403 Forbidden: wrong stage/path or missing API key.';
+    }
+    if (status === 502) {
+      return '502 from API Gateway: Lambda integration/config issue.';
+    }
+    if (status >= 500) {
+      return 'Server error (' + status + ')' + (apiError ? ': ' + apiError : '');
+    }
+    return 'Request failed (' + status + ')' + (apiError ? ': ' + apiError : '');
   }
 
   function insertMessage() {
@@ -51,6 +79,13 @@ $(document).ready(function() {
       .then((response) => {
         console.log(response);
         var data = response.data;
+        if (data && data.body && typeof data.body === 'string') {
+          try {
+            data = JSON.parse(data.body);
+          } catch (e) {
+            // keep original response shape if body isn't JSON
+          }
+        }
 
         if (data.messages && data.messages.length > 0) {
           console.log('received ' + data.messages.length + ' messages');
@@ -78,12 +113,17 @@ $(document).ready(function() {
             }
           }
         } else {
-          insertResponseMessage('Oops, something went wrong. Please try again.');
+          var detail = (data && (data.error || data.message)) ? (': ' + (data.error || data.message)) : '';
+          insertResponseMessage('Oops, backend returned no chatbot messages' + detail);
         }
       })
       .catch((error) => {
-        console.log('an error occurred', error);
-        insertResponseMessage('Oops, something went wrong. Please try again.');
+        var errorMsg = formatChatbotError(error);
+        console.log('chatbot request failed', {
+          error: error,
+          invokeUrl: sdk && sdk.__invokeUrl ? sdk.__invokeUrl : 'unknown'
+        });
+        insertResponseMessage('Oops, request failed. ' + errorMsg);
       });
   }
 

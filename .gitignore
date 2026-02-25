@@ -2,3 +2,4 @@ Assignment_1/setup_step5.sh
 Assignment_1/scripts/__pycache__/yelp_to_dynamodb.cpython-39.pyc
 Assignment_1/dtobpy.sh
 Assignment_1/scripts/__pycache__/ddb_to_opensearch_bulk.cpython-39.pyc
+Assignment_1/lambda/__pycache__/
