@@ -8,11 +8,12 @@ from urllib import request as urlrequest
 from urllib import error as urlerror
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+AWS_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]
 DDB_TABLE_NAME = os.environ["DDB_TABLE_NAME"]
 OPENSEARCH_ENDPOINT = os.environ["OPENSEARCH_ENDPOINT"].rstrip("/")
@@ -20,11 +21,12 @@ OPENSEARCH_INDEX = os.environ.get("OPENSEARCH_INDEX", "restaurants")
 OS_USERNAME = os.environ["OS_USERNAME"]
 OS_PASSWORD = os.environ["OS_PASSWORD"]
 SES_SOURCE_EMAIL = os.environ["SES_SOURCE_EMAIL"]
+SES_REGION = os.environ.get("SES_REGION", AWS_REGION)
 MAX_MESSAGES_PER_RUN = int(os.environ.get("MAX_MESSAGES_PER_RUN", "5"))
 
 sqs = boto3.client("sqs", region_name=AWS_REGION)
 ddb = boto3.client("dynamodb", region_name=AWS_REGION)
-ses = boto3.client("ses", region_name=AWS_REGION)
+ses = boto3.client("ses", region_name=SES_REGION)
 
 
 def os_request(method: str, path: str, body: dict | None = None) -> dict:
@@ -53,25 +55,43 @@ def os_request(method: str, path: str, body: dict | None = None) -> dict:
         raise
 
 
-def parse_sqs_body_lowercase(body_raw: str) -> dict:
+def parse_sqs_body(body_raw: str) -> dict:
     """匹配 LF1 当前小写 keys（lowercase keys）"""
     req = json.loads(body_raw)
 
+    # 兼容不同命名风格（lowercase / camel / Capitalized）
+    key_aliases = {
+        "cuisine": ["cuisine", "Cuisine"],
+        "email": ["email", "Email"],
+        "location": ["location", "Location"],
+        "date": ["date", "Date", "dining_date", "DiningDate"],
+        "time": ["time", "Time", "dining_time", "DiningTime"],
+        "people": ["people", "People", "numberOfPeople", "NumberOfPeople", "people_count"],
+    }
+    norm = {}
+    for target_key, aliases in key_aliases.items():
+        val = None
+        for k in aliases:
+            if req.get(k) is not None and str(req.get(k)).strip() != "":
+                val = req.get(k)
+                break
+        norm[target_key] = val
+
     # required fields（必填字段）
     required = ["cuisine", "email"]
-    missing = [k for k in required if not req.get(k)]
+    missing = [k for k in required if not norm.get(k)]
     if missing:
         raise ValueError(f"Missing required fields: {missing}")
 
     # normalise（规范化）
-    req["cuisine"] = str(req["cuisine"]).strip().lower()
-    req["email"] = str(req["email"]).strip()
-    req["location"] = str(req.get("location") or "manhattan").strip().lower()
-    req["date"] = str(req.get("date") or "")
-    req["time"] = str(req.get("time") or "")
-    req["people"] = str(req.get("people") or "")
+    norm["cuisine"] = str(norm["cuisine"]).strip().lower()
+    norm["email"] = str(norm["email"]).strip()
+    norm["location"] = str(norm.get("location") or "manhattan").strip().lower()
+    norm["date"] = str(norm.get("date") or "")
+    norm["time"] = str(norm.get("time") or "")
+    norm["people"] = str(norm.get("people") or "")
 
-    return req
+    return norm
 
 
 def search_restaurant_ids_by_cuisine(cuisine: str, size: int = 20) -> list[str]:
@@ -206,15 +226,26 @@ def send_email(to_email: str, subject: str, body_text: str) -> str:
     return resp.get("MessageId", "")
 
 
-def process_one_message(msg: dict) -> bool:
-    receipt_handle = msg["ReceiptHandle"]
-    body_raw = msg.get("Body", "{}")
+def delete_polled_message(receipt_handle: str):
+    sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
+
+
+def extract_sqs_message_fields(msg: dict) -> tuple[str, str | None]:
+    """Support both poll format and Lambda SQS-trigger format."""
+    body_raw = msg.get("Body") if "Body" in msg else msg.get("body")
+    receipt_handle = msg.get("ReceiptHandle") if "ReceiptHandle" in msg else msg.get("receiptHandle")
+    return body_raw or "{}", receipt_handle
+
+
+def process_one_message(msg: dict, should_delete_from_queue: bool) -> bool:
+    body_raw, receipt_handle = extract_sqs_message_fields(msg)
 
     try:
-        req = parse_sqs_body_lowercase(body_raw)
+        req = parse_sqs_body(body_raw)
     except Exception as e:
         logger.error("Invalid SQS body, deleting poison message. err=%s body=%s", str(e), body_raw)
-        sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
+        if should_delete_from_queue and receipt_handle:
+            delete_polled_message(receipt_handle)
         return True
 
     cuisine = req["cuisine"]
@@ -227,11 +258,20 @@ def process_one_message(msg: dict) -> bool:
     restaurants = ddb_batch_get_restaurants(chosen_ids)
 
     subject, body_text = format_email(req, restaurants)
-    ses_msg_id = send_email(to_email, subject, body_text)
-    logger.info("SES send_email success MessageId=%s", ses_msg_id)
+    try:
+        ses_msg_id = send_email(to_email, subject, body_text)
+        logger.info("SES send_email success MessageId=%s to=%s", ses_msg_id, to_email)
+    except ClientError as e:
+        err = e.response.get("Error", {})
+        logger.error(
+            "SES send_email failed code=%s message=%s to=%s source=%s ses_region=%s",
+            err.get("Code"), err.get("Message"), to_email, SES_SOURCE_EMAIL, SES_REGION
+        )
+        raise
 
-    sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
-    logger.info("Deleted SQS message after successful processing")
+    if should_delete_from_queue and receipt_handle:
+        delete_polled_message(receipt_handle)
+        logger.info("Deleted polled SQS message after successful processing")
     return True
 
 
@@ -240,22 +280,33 @@ def lambda_handler(event, context):
                 datetime.now(timezone.utc).isoformat(),
                 json.dumps(event)[:1000])
 
-    resp = sqs.receive_message(
-        QueueUrl=SQS_QUEUE_URL,
-        MaxNumberOfMessages=min(MAX_MESSAGES_PER_RUN, 10),
-        WaitTimeSeconds=10,
-        VisibilityTimeout=120
-    )
-
-    messages = resp.get("Messages", [])
-    logger.info("Received %d SQS messages", len(messages))
+    # Mode A: Lambda is wired directly to SQS trigger (event.Records)
+    trigger_records = event.get("Records") if isinstance(event, dict) else None
+    if trigger_records and isinstance(trigger_records, list):
+        messages = [
+            r for r in trigger_records
+            if (r.get("eventSource") == "aws:sqs" or r.get("eventSourceARN"))
+        ]
+        should_delete_from_queue = False
+        logger.info("Processing %d messages from SQS trigger event", len(messages))
+    else:
+        # Mode B: EventBridge/scheduled poller
+        resp = sqs.receive_message(
+            QueueUrl=SQS_QUEUE_URL,
+            MaxNumberOfMessages=min(MAX_MESSAGES_PER_RUN, 10),
+            WaitTimeSeconds=10,
+            VisibilityTimeout=120
+        )
+        messages = resp.get("Messages", [])
+        should_delete_from_queue = True
+        logger.info("Polled %d SQS messages", len(messages))
 
     processed = 0
     failed = 0
 
     for msg in messages:
         try:
-            ok = process_one_message(msg)
+            ok = process_one_message(msg, should_delete_from_queue=should_delete_from_queue)
             if ok:
                 processed += 1
             else:

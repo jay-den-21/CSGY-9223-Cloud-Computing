@@ -16,6 +16,9 @@ ALLOWED_CUISINES = {
 # 仅支援 Manhattan
 ALLOWED_LOCATIONS = {"manhattan", "new york", "nyc", "manhattan, ny"}
 
+def _norm_key(s):
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
 def get_slot_value(slots, slot_name):
     slot = slots.get(slot_name)
     if not slot:
@@ -25,7 +28,26 @@ def get_slot_value(slots, slot_name):
     except Exception:
         return None
 
-def close(intent_name, message, state="Fulfilled", slots=None):
+def get_slot_value_fuzzy(slots, exact_names, keyword_tokens):
+    # 1) exact name match (case/format insensitive)
+    norm_to_key = {_norm_key(k): k for k in slots.keys()}
+    for n in exact_names:
+        k = norm_to_key.get(_norm_key(n))
+        if k:
+            v = get_slot_value(slots, k)
+            if v:
+                return v
+
+    # 2) fallback by keyword hit in slot key
+    for raw_key in slots.keys():
+        nk = _norm_key(raw_key)
+        if any(tok in nk for tok in keyword_tokens):
+            v = get_slot_value(slots, raw_key)
+            if v:
+                return v
+    return None
+
+def close(intent_name, message, state="Fulfilled", slots=None, session_attributes=None):
     return {
         "sessionState": {
             "dialogAction": {"type": "Close"},
@@ -33,7 +55,8 @@ def close(intent_name, message, state="Fulfilled", slots=None):
                 "name": intent_name,
                 "state": state,
                 "slots": slots or {}
-            }
+            },
+            "sessionAttributes": session_attributes or {}
         },
         "messages": [
             {
@@ -43,7 +66,7 @@ def close(intent_name, message, state="Fulfilled", slots=None):
         ]
     }
 
-def delegate(intent_name, slots):
+def delegate(intent_name, slots, session_attributes=None):
     return {
         "sessionState": {
             "dialogAction": {"type": "Delegate"},
@@ -51,11 +74,12 @@ def delegate(intent_name, slots):
                 "name": intent_name,
                 "state": "InProgress",
                 "slots": slots
-            }
+            },
+            "sessionAttributes": session_attributes or {}
         }
     }
 
-def elicit_slot(intent_name, slots, slot_to_elicit, message):
+def elicit_slot(intent_name, slots, slot_to_elicit, message, session_attributes=None):
     return {
         "sessionState": {
             "dialogAction": {
@@ -66,7 +90,8 @@ def elicit_slot(intent_name, slots, slot_to_elicit, message):
                 "name": intent_name,
                 "state": "InProgress",
                 "slots": slots
-            }
+            },
+            "sessionAttributes": session_attributes or {}
         },
         "messages": [
             {
@@ -81,12 +106,29 @@ def is_valid_email(email):
         return False
     return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email) is not None
 
+
+def send_sqs_request(location, cuisine, dining_date, dining_time, people, email):
+    message_body = {
+        "location": location,
+        "cuisine": cuisine.lower(),
+        "date": dining_date,
+        "time": dining_time,
+        "people": str(people),
+        "email": email
+    }
+    resp = sqs.send_message(
+        QueueUrl=SQS_QUEUE_URL,
+        MessageBody=json.dumps(message_body)
+    )
+    return resp.get("MessageId")
+
 def lambda_handler(event, context):
     print("Lex event:", json.dumps(event))
 
     intent = event["sessionState"]["intent"]
     intent_name = intent["name"]
     slots = intent.get("slots") or {}
+    session_attributes = (event.get("sessionState", {}) or {}).get("sessionAttributes") or {}
     invocation_source = event.get("invocationSource")  # DialogCodeHook / FulfillmentCodeHook
 
     # --- 1) GreetingIntent ---
@@ -99,30 +141,41 @@ def lambda_handler(event, context):
 
     # --- 3) DiningSuggestionsIntent ---
     if intent_name == "DiningSuggestionsIntent":
-        # 这些 slot 名与在 Lex console 中建立的名字保持一致
-        location = (
-            get_slot_value(slots, "Location")
-            or get_slot_value(slots, "DiningLocation")
+        # 尽量容错：支持不同 slot 命名
+        location = get_slot_value_fuzzy(
+            slots, ["Location", "DiningLocation", "City", "Area"], ["location", "city", "area"]
         )
-        cuisine = (
-            get_slot_value(slots, "Cuisine")
-            or get_slot_value(slots, "DiningCuisine")
+        cuisine = get_slot_value_fuzzy(
+            slots, ["Cuisine", "DiningCuisine", "FoodType"], ["cuisine", "food"]
         )
-        dining_date = (
-            get_slot_value(slots, "DiningDate")
-            or get_slot_value(slots, "Date")
+        dining_date = get_slot_value_fuzzy(
+            slots, ["DiningDate", "Date"], ["date"]
         )
-        dining_time = (
-            get_slot_value(slots, "DiningTime")
-            or get_slot_value(slots, "Time")
+        dining_time = get_slot_value_fuzzy(
+            slots, ["DiningTime", "Time"], ["time"]
         )
-        people = (
-            get_slot_value(slots, "NumberOfPeople")
-            or get_slot_value(slots, "PeopleCount")
+        people = get_slot_value_fuzzy(
+            slots, ["NumberOfPeople", "PeopleCount", "PartySize"], ["people", "party", "count", "number"]
         )
-        email = (
-            get_slot_value(slots, "Email")
-            or get_slot_value(slots, "email")
+        email = get_slot_value_fuzzy(
+            slots, ["Email", "email", "EmailAddress"], ["email", "mail"]
+        )
+
+        print(
+            "LF1 extracted slots:",
+            json.dumps(
+                {
+                    "invocationSource": invocation_source,
+                    "slotKeys": list(slots.keys()),
+                    "location": location,
+                    "cuisine": cuisine,
+                    "dining_date": dining_date,
+                    "dining_time": dining_time,
+                    "people": people,
+                    "email": email,
+                },
+                ensure_ascii=False,
+            ),
         )
 
         # ---------- DialogCodeHook: 参数校验（validation） ----------
@@ -133,7 +186,8 @@ def lambda_handler(event, context):
                     intent_name,
                     slots,
                     "Location" if "Location" in slots else "DiningLocation",
-                    f"Sorry, I can't fulfill requests for {location}. Please enter a valid location in Manhattan."
+                    f"Sorry, I can't fulfill requests for {location}. Please enter a valid location in Manhattan.",
+                    session_attributes
                 )
 
             # cuisine 校验
@@ -142,7 +196,8 @@ def lambda_handler(event, context):
                     intent_name,
                     slots,
                     "Cuisine" if "Cuisine" in slots else "DiningCuisine",
-                    "Sorry, I currently support cuisines like chinese, japanese, italian, mexican, american. What cuisine would you like?"
+                    "Sorry, I currently support cuisines like chinese, japanese, italian, mexican, american. What cuisine would you like?",
+                    session_attributes
                 )
 
             # email 校验
@@ -151,16 +206,39 @@ def lambda_handler(event, context):
                     intent_name,
                     slots,
                     "Email" if "Email" in slots else "email",
-                    "That email address looks invalid. Please provide a valid email address."
+                    "That email address looks invalid. Please provide a valid email address.",
+                    session_attributes
                 )
 
             # 未填满时交回给 Lex 自己继续问（Delegate）
             required_values = [location, cuisine, dining_date, dining_time, people, email]
             if not all(required_values):
-                return delegate(intent_name, slots)
+                return delegate(intent_name, slots, session_attributes)
 
-            # 如果已经填满，通常 Lex 会继续走 FulfillmentCodeHook（视你配置）
-            return delegate(intent_name, slots)
+            # 参数已填满：无论 FulfillmentCodeHook 是否配置，直接写 SQS，避免“队列一直为空”
+            # 用 session attribute 防止重复入队。
+            if session_attributes.get("requestEnqueued") != "1":
+                msg_id = send_sqs_request(location, cuisine, dining_date, dining_time, people, email)
+                session_attributes["requestEnqueued"] = "1"
+                print("LF1 SQS enqueue success (DialogCodeHook), MessageId=", msg_id)
+
+            return {
+                "sessionState": {
+                    "dialogAction": {"type": "Close"},
+                    "intent": {
+                        "name": intent_name,
+                        "state": "Fulfilled",
+                        "slots": slots
+                    },
+                    "sessionAttributes": session_attributes
+                },
+                "messages": [
+                    {
+                        "contentType": "PlainText",
+                        "content": "You’re all set. Expect my suggestions shortly! I will notify you by email."
+                    }
+                ]
+            }
 
         # ---------- FulfillmentCodeHook: 写 SQS + 确认回复 ----------
         # Lex 有时直接在 Fulfillment 阶段调用，所以这里也做一次兜底校验
@@ -169,28 +247,32 @@ def lambda_handler(event, context):
                 intent_name,
                 "I am missing some details for your dining request. Please try again.",
                 state="Failed",
-                slots=slots
+                slots=slots,
+                session_attributes=session_attributes
             )
 
-        message_body = {
-            "location": location,
-            "cuisine": cuisine.lower(),
-            "date": dining_date,
-            "time": dining_time,
-            "people": str(people),
-            "email": email
+        if session_attributes.get("requestEnqueued") != "1":
+            msg_id = send_sqs_request(location, cuisine, dining_date, dining_time, people, email)
+            session_attributes["requestEnqueued"] = "1"
+            print("LF1 SQS enqueue success (FulfillmentCodeHook), MessageId=", msg_id)
+
+        return {
+            "sessionState": {
+                "dialogAction": {"type": "Close"},
+                "intent": {
+                    "name": intent_name,
+                    "state": "Fulfilled",
+                    "slots": slots
+                },
+                "sessionAttributes": session_attributes
+            },
+            "messages": [
+                {
+                    "contentType": "PlainText",
+                    "content": "You’re all set. Expect my suggestions shortly! I will notify you by email."
+                }
+            ]
         }
-
-        sqs.send_message(
-            QueueUrl=SQS_QUEUE_URL,
-            MessageBody=json.dumps(message_body)
-        )
-
-        return close(
-            intent_name,
-            "You’re all set. Expect my suggestions shortly! I will notify you by email.",
-            slots=slots
-        )
 
     # --- fallback ---
     return close(intent_name, "Sorry, I couldn't understand that.", state="Failed", slots=slots)
