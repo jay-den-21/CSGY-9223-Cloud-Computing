@@ -6,10 +6,28 @@ $(document).ready(function() {
     i = 0;
   // Keep one stable Lex session per browser page load.
   var clientSessionId = 'web-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  var clientUserId = getOrCreateUserId();
+  var RETURNING_USER_PROBE = '__returning_user_check__';
+
+  function getOrCreateUserId() {
+    var key = 'conciergeUserId';
+    try {
+      var existing = window.localStorage.getItem(key);
+      if (existing && existing.trim() !== '') {
+        return existing;
+      }
+      var generated = 'user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 12);
+      window.localStorage.setItem(key, generated);
+      return generated;
+    } catch (e) {
+      return 'ephemeral-' + Date.now() + '-' + Math.random().toString(36).slice(2, 12);
+    }
+  }
 
   $(window).load(function() {
     $messages.mCustomScrollbar();
     insertResponseMessage('Hi there, I\'m your personal Concierge. How can I help?');
+    checkReturningUserRecommendation();
   });
 
   function updateScrollbar() {
@@ -30,14 +48,46 @@ $(document).ready(function() {
   function callChatbotApi(message) {
     // params, body, additionalParams
     return sdk.chatbotPost({}, {
+      userId: clientUserId,
+      sessionId: clientSessionId,
       messages: [{
         type: 'unstructured',
         unstructured: {
           id: clientSessionId,
+          userId: clientUserId,
           text: message
         }
       }]
     }, {});
+  }
+
+  function extractResponseData(response) {
+    var data = response.data;
+    if (data && data.body && typeof data.body === 'string') {
+      try {
+        data = JSON.parse(data.body);
+      } catch (e) {
+        // keep original response shape if body isn't JSON
+      }
+    }
+    return data;
+  }
+
+  function checkReturningUserRecommendation() {
+    callChatbotApi(RETURNING_USER_PROBE)
+      .then((response) => {
+        var data = extractResponseData(response);
+        if (!data || !data.messages || data.messages.length === 0) {
+          return;
+        }
+        var first = data.messages[0];
+        if (first.type === 'unstructured' && first.unstructured && first.unstructured.text) {
+          insertResponseMessage(first.unstructured.text);
+        }
+      })
+      .catch((error) => {
+        console.log('returning user probe failed', error);
+      });
   }
 
   function formatChatbotError(error) {
@@ -78,14 +128,7 @@ $(document).ready(function() {
     callChatbotApi(msg)
       .then((response) => {
         console.log(response);
-        var data = response.data;
-        if (data && data.body && typeof data.body === 'string') {
-          try {
-            data = JSON.parse(data.body);
-          } catch (e) {
-            // keep original response shape if body isn't JSON
-          }
-        }
+        var data = extractResponseData(response);
 
         if (data.messages && data.messages.length > 0) {
           console.log('received ' + data.messages.length + ' messages');

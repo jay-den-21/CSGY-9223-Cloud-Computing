@@ -1,12 +1,17 @@
 import json
 import os
 import re
+from datetime import datetime, timezone
+
 import boto3
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]
+USER_STATE_TABLE = os.environ.get("USER_STATE_TABLE", "")
 
 sqs = boto3.client("sqs", region_name=REGION)
+ddb = boto3.resource("dynamodb", region_name=REGION) if USER_STATE_TABLE else None
+user_state_table = ddb.Table(USER_STATE_TABLE) if USER_STATE_TABLE else None
 
 # 可接受的 cuisine（菜系）白名单；
 ALLOWED_CUISINES = {
@@ -107,7 +112,38 @@ def is_valid_email(email):
     return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email) is not None
 
 
-def send_sqs_request(location, cuisine, dining_date, dining_time, people, email):
+def get_user_id_from_session_attributes(session_attributes):
+    if not session_attributes:
+        return None
+    candidate = (
+        session_attributes.get("userId")
+        or session_attributes.get("userid")
+        or session_attributes.get("user_id")
+    )
+    if candidate is None:
+        return None
+    val = str(candidate).strip()
+    return val or None
+
+
+def save_user_last_search(user_id, location, cuisine, email):
+    if not (user_state_table and user_id and cuisine):
+        return
+
+    item = {
+        "UserId": str(user_id).strip(),
+        "LastLocation": str(location or "manhattan").strip().lower(),
+        "LastCuisine": str(cuisine).strip().lower(),
+        "UpdatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if email:
+        item["LastEmail"] = str(email).strip().lower()
+
+    user_state_table.put_item(Item=item)
+    print("LF1 saved user state:", json.dumps({"UserId": item["UserId"], "LastCuisine": item["LastCuisine"], "LastLocation": item["LastLocation"]}))
+
+
+def send_sqs_request(location, cuisine, dining_date, dining_time, people, email, user_id=None):
     message_body = {
         "location": location,
         "cuisine": cuisine.lower(),
@@ -116,6 +152,8 @@ def send_sqs_request(location, cuisine, dining_date, dining_time, people, email)
         "people": str(people),
         "email": email
     }
+    if user_id:
+        message_body["userId"] = str(user_id)
     resp = sqs.send_message(
         QueueUrl=SQS_QUEUE_URL,
         MessageBody=json.dumps(message_body)
@@ -129,6 +167,7 @@ def lambda_handler(event, context):
     intent_name = intent["name"]
     slots = intent.get("slots") or {}
     session_attributes = (event.get("sessionState", {}) or {}).get("sessionAttributes") or {}
+    user_id = get_user_id_from_session_attributes(session_attributes)
     invocation_source = event.get("invocationSource")  # DialogCodeHook / FulfillmentCodeHook
 
     # --- 1) GreetingIntent ---
@@ -173,6 +212,7 @@ def lambda_handler(event, context):
                     "dining_time": dining_time,
                     "people": people,
                     "email": email,
+                    "user_id": user_id,
                 },
                 ensure_ascii=False,
             ),
@@ -218,9 +258,10 @@ def lambda_handler(event, context):
             # 参数已填满：无论 FulfillmentCodeHook 是否配置，直接写 SQS，避免“队列一直为空”
             # 用 session attribute 防止重复入队。
             if session_attributes.get("requestEnqueued") != "1":
-                msg_id = send_sqs_request(location, cuisine, dining_date, dining_time, people, email)
+                msg_id = send_sqs_request(location, cuisine, dining_date, dining_time, people, email, user_id=user_id)
                 session_attributes["requestEnqueued"] = "1"
                 print("LF1 SQS enqueue success (DialogCodeHook), MessageId=", msg_id)
+                save_user_last_search(user_id, location, cuisine, email)
 
             return {
                 "sessionState": {
@@ -252,9 +293,10 @@ def lambda_handler(event, context):
             )
 
         if session_attributes.get("requestEnqueued") != "1":
-            msg_id = send_sqs_request(location, cuisine, dining_date, dining_time, people, email)
+            msg_id = send_sqs_request(location, cuisine, dining_date, dining_time, people, email, user_id=user_id)
             session_attributes["requestEnqueued"] = "1"
             print("LF1 SQS enqueue success (FulfillmentCodeHook), MessageId=", msg_id)
+            save_user_last_search(user_id, location, cuisine, email)
 
         return {
             "sessionState": {
