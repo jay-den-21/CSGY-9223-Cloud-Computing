@@ -2,6 +2,7 @@ from flask import Flask, render_template,request,redirect,url_for # For flask im
 from pymongo import MongoClient # Database connector
 from bson.objectid import ObjectId # For ObjectId to work
 from bson.errors import InvalidId # For catching InvalidId exception for ObjectId
+from pymongo.errors import PyMongoError
 import os
 
 mongodb_host = os.environ.get('MONGO_HOST', 'localhost')
@@ -115,6 +116,26 @@ def search():
 		todos_l = todos.find({refer:key})
 	return render_template('searchlist.html',todos=todos_l,t=title,h=heading)
 
+@app.route("/healthz")
+def healthz():
+    # use the document switch to simulate liveness failure
+    if os.path.exists("/tmp/fail_liveness"):
+        return "liveness failed", 500
+    return "ok", 200
+
+
+@app.route("/readyz")
+def readyz():
+    # use the document switch to simulate readiness failure
+    if os.path.exists("/tmp/fail_readiness"):
+        return "readiness failed", 500
+
+    try:
+        client.admin.command("ping")
+        return "ready", 200
+    except PyMongoError:
+        return "not ready", 500
+    
 @app.route("/about")
 def about():
 	return render_template('credits.html',t=title,h=heading)

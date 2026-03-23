@@ -1,10 +1,15 @@
 # web deployment 这一块！
-apiVersion: apps/v1
+apiVersion: apps/v1 # remember this is k8s resource version
 kind: Deployment
 metadata:
   name: todo-web
 spec:
   replicas: 2
+  strategy: # added
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   selector:
     matchLabels:
       app: todo-web
@@ -15,7 +20,7 @@ spec:
     spec:
       containers:
         - name: todo-web
-          image: jaydenx21/todo-app:latest
+          image: jaydenx21/todo-app:v3
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
@@ -28,3 +33,50 @@ spec:
               value: "production"
             - name: PORT
               value: "5000"
+          # v3 health check
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: todo-web
+# spec:
+#   replicas: 2
+#   selector:
+#     matchLabels:
+#       app: todo-web
+#   template:
+#     metadata:
+#       labels:
+#         app: todo-web
+#     spec:
+#       containers:
+#         - name: todo-web
+#           image: jaydenx21/todo-app:latest
+#           imagePullPolicy: Always
+#           ports:
+#             - containerPort: 5000
+#           env:
+#             - name: MONGO_HOST
+#               value: mongo
+#             - name: MONGO_PORT
+#               value: "27017"
+#             - name: FLASK_ENV
+#               value: "production"
+#             - name: PORT
+#               value: "5000"
