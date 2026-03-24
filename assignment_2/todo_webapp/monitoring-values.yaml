@@ -1,0 +1,35 @@
+alertmanager:
+  enabled: true
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 1h
+      receiver: 'slack-notifications'
+    receivers:
+      - name: 'null'
+      - name: 'slack-notifications'
+        slack_configs:
+          - send_resolved: true
+            title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+            text: >-
+              Namespace: {{ .CommonLabels.namespace }}
+              Pod: {{ .CommonLabels.pod }}
+              Summary: {{ .CommonAnnotations.summary }}
+
+additionalPrometheusRulesMap:
+  todo-alerts:
+    groups:
+      - name: todo-web.rules
+        rules:
+          - alert: TodoWebContainerRestarting
+            expr: increase(kube_pod_container_status_restarts_total{namespace="default",pod=~"todo-web-.*"}[5m]) > 0
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "todo-web container restarted"
+              description: "A todo-web container restarted in the last 5 minutes."
