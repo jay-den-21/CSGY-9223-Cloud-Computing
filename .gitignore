@@ -6,6 +6,8 @@ __pycache__/
 
 .env
 .env.*
+!.env.example
+assignment_3/frontend/config.js
 
 .venv/
 venv/
