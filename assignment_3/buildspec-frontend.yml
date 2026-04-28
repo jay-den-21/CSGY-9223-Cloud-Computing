@@ -1,0 +1,19 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Checking AWS CLI"
+      - aws --version
+
+  build:
+    commands:
+      - echo "Current directory:"
+      - pwd
+      - echo "Listing assignment_3/frontend"
+      - ls -la assignment_3/frontend
+
+      - echo "Deploying frontend files to S3 B1"
+      - aws s3 sync assignment_3/frontend s3://jayden-hw3-photo-frontend-b1 --exclude "config.js" --exclude ".env" --exclude ".DS_Store"
+
+      - echo "Frontend deployment completed"

@@ -1,0 +1,33 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Checking AWS CLI and Python"
+      - aws --version
+      - python --version
+
+  build:
+    commands:
+      - echo "Current directory:"
+      - pwd
+      - echo "Listing assignment_3/lambda"
+      - ls -la assignment_3/lambda
+
+      - echo "Packaging index-photos Lambda"
+      - cd assignment_3/lambda
+      - zip -r /tmp/index-photos.zip LF1.py
+      - cd ../..
+
+      - echo "Packaging search-photos Lambda"
+      - cd assignment_3/lambda
+      - zip -r /tmp/search-photos.zip LF2.py
+      - cd ../..
+
+      - echo "Updating Lambda function index-photos"
+      - aws lambda update-function-code --function-name index-photos --zip-file fileb:///tmp/index-photos.zip
+
+      - echo "Updating Lambda function search-photos"
+      - aws lambda update-function-code --function-name search-photos --zip-file fileb:///tmp/search-photos.zip
+
+      - echo "Backend deployment completed"
