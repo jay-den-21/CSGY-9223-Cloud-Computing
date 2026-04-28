@@ -9,6 +9,7 @@ from uuid import uuid4
 import boto3
 
 print("hw3 backend pipeline test!")
+print("Backend pipeline demo")
 
 lex = boto3.client("lexv2-runtime")
 s3 = boto3.client("s3")

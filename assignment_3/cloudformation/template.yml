@@ -3,6 +3,10 @@ Description: "CS-GY 9223 HW3 basic CloudFormation stack for photo album app"
 ## Note: This template is a sample and includes placeholder Lambda code and basic API Gateway setup.
 ## It can be different what is really deployed by me because of some problems of environment variables and permissions.
 ## Most functions and html files are simplified. Please refer to the actual deployed resources for the final implementation details.
+
+# curl "https://ps7gtg9aq5.execute-api.us-east-1.amazonaws.com/prod/search?q=test"
+# aws s3 cp /tmp/index.html s3://hw3-photo-album-cfn-817928573506-us-east-1-photos/test.txt
+
 Parameters:
   ProjectName:
     Type: String
