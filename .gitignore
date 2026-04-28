@@ -8,6 +8,7 @@ __pycache__/
 .env.*
 !.env.example
 assignment_3/frontend/config.js
+assignment_3/test_photo/
 
 .venv/
 venv/
